@@ -1,0 +1,49 @@
+name: YAML Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+      - 'infra/.yamllint'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.yml'
+      - '**/*.yaml'
+      - 'infra/.yamllint'
+  workflow_dispatch:
+
+jobs:
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install yamllint
+        run: |
+          python -m pip install --upgrade pip
+          pip install yamllint
+
+      - name: Run YAML lint on infra directory
+        run: yamllint .
+        working-directory: infra
+
+      - name: Run YAML lint on config directory
+        run: |
+          # Allow failure since config may have different requirements
+          yamllint . || true
+        working-directory: config
+        continue-on-error: true
+
+      - name: Run YAML lint on workflow files
+        run: yamllint .github/workflows/

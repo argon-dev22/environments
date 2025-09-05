@@ -1,9 +1,6 @@
----
 - hosts: local
-  gather_facts: yes
+  gather_facts: true
   vars:
-    packages: [zsh, asdf, chezmoi, age]
-    
     paths:
       home: "{{ ansible_env.HOME }}"
       chezmoi_config: "{{ ansible_env.HOME }}/.config/chezmoi"
@@ -13,6 +10,7 @@
       zprofile: "{{ ansible_env.HOME }}/.zprofile"
       zshrc: "{{ ansible_env.HOME }}/.zshrc"
       tool_versions: "{{ ansible_env.HOME }}/.tool-versions"
+      brewfile: "{{ ansible_env.HOME }}/.Brewfile"
 
     brew_configs:
       Darwin_arm64: &darwin_arm
@@ -52,88 +50,87 @@
           PATH: "{{ ansible_env.PATH }}:{{ brew.prefix }}/opt/asdf/shims:{{ brew.prefix }}/opt/asdf/bin"
 
   tasks:
-    - name: Check Homebrew installation
-      command: "{{ brew.bin }}/brew --version"
-      register: brew_check
-      changed_when: false
-      failed_when: false
-
-    - name: Prepare Homebrew installation directories (Linux)
+    - name: Setup Homebrew(Linuxbrew) and install main packages
       block:
-        - name: Create /home/linuxbrew directory
-          file:
-            path: /home/linuxbrew
-            state: directory
-            mode: '0755'
-            owner: "{{ ansible_user_id }}"
-            group: "{{ ansible_user_id }}"
-          become: yes
+        - name: Check Homebrew installation
+          command: "{{ brew.bin }}/brew --version"
+          register: brew_check
+          changed_when: false
+          failed_when: false
 
-        - name: Create /home/linuxbrew/.linuxbrew directory
-          file:
-            path: /home/linuxbrew/.linuxbrew
-            state: directory
-            mode: '0755'
-            owner: "{{ ansible_user_id }}"
-            group: "{{ ansible_user_id }}"
-          become: yes
-      when:
-        - brew_check.rc != 0
-        - ansible_facts.os_family == "Debian"
+        - name: Prepare Homebrew installation directories (Linux)
+          block:
+            - name: Create /home/linuxbrew directory
+              file:
+                path: /home/linuxbrew
+                state: directory
+                mode: '0755'
+                owner: "{{ ansible_user_id }}"
+                group: "{{ ansible_user_id }}"
+              become: true
 
-    - name: Install Homebrew
-      shell: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-      when: brew_check.rc != 0
-      environment:
-        NONINTERACTIVE: "1"
-        HOME: "{{ paths.home }}"
-        USER: "{{ ansible_user_id }}"
+            - name: Create /home/linuxbrew/.linuxbrew directory
+              file:
+                path: /home/linuxbrew/.linuxbrew
+                state: directory
+                mode: '0755'
+                owner: "{{ ansible_user_id }}"
+                group: "{{ ansible_user_id }}"
+              become: true
+          when:
+            - brew_check.rc != 0
+            - ansible_facts.os_family == "Debian"
 
-    - name: Install essential system dependencies
-      block:
-        - name: Install core dependencies (Debian/Ubuntu)
-          apt:
-            name: 
-              - build-essential
-              - unzip
-              - curl
-              - wget
-              - git
-              - gnupg
-              - dirmngr
-              - ca-certificates
-              - software-properties-common
-              - libssl-dev
-              - libffi-dev
-              - zlib1g-dev
-              - libbz2-dev
-              - libreadline-dev
-              - libsqlite3-dev
-              - xz-utils
-            update_cache: yes
-            state: present
-          become: yes
-          when: ansible_facts.os_family == "Debian"
+        - name: Install Homebrew
+          shell: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          when: brew_check.rc != 0
+          environment:
+            NONINTERACTIVE: "1"
+            HOME: "{{ paths.home }}"
+            USER: "{{ ansible_user_id }}"
 
-        - name: Install core dependencies (macOS)
+        - name: Install essential system dependencies
+          block:
+            - name: Install core dependencies (Debian/Ubuntu)
+              apt:
+                name:
+                  - build-essential
+                  - unzip
+                  - curl
+                  - wget
+                  - git
+                  - gnupg
+                  - dirmngr
+                  - ca-certificates
+                  - software-properties-common
+                  - libssl-dev
+                  - libffi-dev
+                  - zlib1g-dev
+                  - libbz2-dev
+                  - libreadline-dev
+                  - libsqlite3-dev
+                  - xz-utils
+                update_cache: true
+                state: present
+              become: true
+              when: ansible_facts.os_family == "Debian"
+
+            - name: Install core dependencies (macOS)
+              community.general.homebrew:
+                name:
+                  - unzip
+                  - gnupg
+                state: present
+              when: ansible_facts.os_family == "Darwin"
+
+        - name: Install main packages
           community.general.homebrew:
             name:
-              - unzip
-              - gnupg
+              - zsh
+              - chezmoi
+              - age
+              - asdf
             state: present
-          when: ansible_facts.os_family == "Darwin"
-
-    - name: Check existing packages
-      command: "{{ brew.bin }}/brew list --versions {{ item }}"
-      loop: "{{ packages }}"
-      register: package_check
-      changed_when: false
-      failed_when: false
-
-    - name: Install missing packages
-      shell: "{{ brew.bin }}/brew install {{ item.item }}"
-      loop: "{{ package_check.results }}"
-      when: item.rc != 0
 
     - name: Configure zsh as default shell and install zplug
       block:
@@ -142,14 +139,14 @@
             repo: "https://github.com/zplug/zplug"
             dest: "{{ paths.home }}/.zplug"
             version: "master"
-            update: no
+            update: false
 
         - name: Register zsh in /etc/shells
           lineinfile:
             path: /etc/shells
             line: "{{ brew.zsh }}"
             state: present
-          become: yes
+          become: true
 
         - name: Get current shell
           command: /bin/sh -lc 'echo "$SHELL"'
@@ -160,8 +157,37 @@
           user:
             name: "{{ ansible_user_id }}"
             shell: "{{ brew.zsh }}"
-          become: yes
+          become: true
           when: current_shell.stdout != brew.zsh
+
+        - name: Verify zsh configuration
+          block:
+            - name: Check if .zshrc exists
+              stat:
+                path: "{{ paths.zshrc }}"
+              register: zshrc_final_check
+
+            - name: Test zsh configuration syntax
+              shell: "{{ brew.zsh }} -n {{ paths.zshrc }}"
+              register: zsh_syntax_check
+              changed_when: false
+              failed_when: false
+              when: zshrc_final_check.stat.exists
+
+            - name: Test interactive zsh loading
+              shell: "timeout 10 {{ brew.zsh }} -i -c 'echo ZSH_LOADED_OK && exit 0'"
+              register: zsh_interactive_test
+              changed_when: false
+              failed_when: false
+              when: zshrc_final_check.stat.exists
+
+            - name: Display verification results
+              debug:
+                msg:
+                  - "=== ZSH Configuration Verification ==="
+                  - ".zshrc exists: {{ 'YES' if zshrc_final_check.stat.exists else 'NO' }}"
+                  - "Syntax Check: {{ 'PASSED' if (zshrc_final_check.stat.exists and zsh_syntax_check.rc == 0) else 'SKIPPED/FAILED' }}"
+                  - "Interactive Load: {{ 'PASSED' if (zshrc_final_check.stat.exists and zsh_interactive_test.rc == 0) else 'SKIPPED/FAILED' }}"
 
     - name: Setup encryption and dotfiles management
       block:
@@ -219,17 +245,24 @@
           register: doctor_result
           changed_when: false
 
+        - name: Check if dotfiles need to be applied
+          command: "{{ brew.bin }}/chezmoi diff"
+          register: chezmoi_diff_check
+          changed_when: false
+          failed_when: false
+
         - name: Apply dotfiles
           command: "{{ brew.bin }}/chezmoi apply"
           register: apply_result
           no_log: true
+          when: chezmoi_diff_check.stdout != ""
 
         - name: Create asdf compatibility symlink
           file:
             src: "{{ brew.prefix }}/opt/asdf"
             dest: "{{ paths.home }}/.asdf"
             state: link
-            force: yes
+            force: true
 
         - name: Get final status
           command: "{{ brew.bin }}/chezmoi status"
@@ -239,165 +272,388 @@
       environment:
         AGE_IDENTITIES_FILE: "{{ paths.age_key }}"
 
-    - name: Verify zsh configuration
+    - name: Install packages and tools
       block:
-        - name: Check if .zshrc exists
-          stat:
-            path: "{{ paths.zshrc }}"
-          register: zshrc_final_check
-
-        - name: Test zsh configuration syntax
-          shell: "{{ brew.zsh }} -n {{ paths.zshrc }}"
-          register: zsh_syntax_check
-          failed_when: false
-          when: zshrc_final_check.stat.exists
-
-        - name: Test interactive zsh loading
-          shell: "timeout 10 {{ brew.zsh }} -i -c 'echo ZSH_LOADED_OK && exit 0'"
-          register: zsh_interactive_test
-          failed_when: false
-          when: zshrc_final_check.stat.exists
-
-        - name: Display verification results
-          debug:
-            msg:
-              - "=== ZSH Configuration Verification ==="
-              - ".zshrc exists: {{ 'YES' if zshrc_final_check.stat.exists else 'NO' }}"
-              - "Syntax Check: {{ 'PASSED' if (zshrc_final_check.stat.exists and zsh_syntax_check.rc == 0) else 'SKIPPED/FAILED' }}"
-              - "Interactive Load: {{ 'PASSED' if (zshrc_final_check.stat.exists and zsh_interactive_test.rc == 0) else 'SKIPPED/FAILED' }}"
-
-    - name: Check .tool-versions file exists
-      stat:
-        path: "{{ paths.tool_versions }}"
-      register: tool_versions_file
-
-    - name: Setup asdf version management
-      block:
-        - name: Read .tool-versions content
-          slurp:
-            src: "{{ paths.tool_versions }}"
-          register: tool_versions_raw
-
-        - name: Parse .tool-versions content
-          set_fact:
-            asdf_tools: >-
-              {{
-                (tool_versions_raw.content | b64decode).splitlines()
-                | map('trim')
-                | reject('match', '^(#|$)')
-                | map('regex_findall', '(\S+)')
-                | list
-              }}
-
-        - name: Display detected tools
-          debug:
-            msg: "Detected asdf tools: {{ asdf_tools | map('join', ' ') | list | join(', ') }}"
-          when: asdf_tools is defined and asdf_tools | length > 0
-
-        - name: Get currently installed plugins
-          shell: '. "{{ asdf_sh }}" && asdf plugin list'
-          register: installed_plugins
-          changed_when: false
-          failed_when: false
-          args:
-            executable: /bin/bash
-
-        - name: Install missing asdf plugins
-          shell: '. "{{ asdf_sh }}" && asdf plugin add {{ item[0] }}'
-          loop: "{{ asdf_tools }}"
-          when: 
-            - asdf_tools is defined
-            - item[0] not in (installed_plugins.stdout_lines | default([]))
-          failed_when: false
-          args:
-            executable: /bin/bash
-
-        - name: Handle nodejs plugin requirements
-          shell: '. "{{ asdf_sh }}" && bash ~/.asdf/plugins/nodejs/bin/import-release-team-keyring'
-          when: 
-            - asdf_tools is defined
-            - asdf_tools | map('first') | list | select('match', 'nodejs') | list | length > 0
-          failed_when: false
-          changed_when: false
-          args:
-            executable: /bin/bash
-
         - name: Install tools from .tool-versions
-          shell: '. "{{ asdf_sh }}" && cd "{{ paths.home }}" && asdf install'
-          when: asdf_tools is defined
-          args:
-            executable: /bin/bash
+          block:
+            - name: Check .tool-versions file exists
+              stat:
+                path: "{{ paths.tool_versions }}"
+              register: tool_versions_file
 
-        - name: Reshim asdf executables
-          shell: '. "{{ asdf_sh }}" && asdf reshim'
-          when: asdf_tools is defined
-          args:
-            executable: /bin/bash
+            - name: Setup asdf version management
+              block:
+                - name: Read .tool-versions content
+                  slurp:
+                    src: "{{ paths.tool_versions }}"
+                  register: tool_versions_raw
 
-        - name: Verify asdf current versions
-          shell: '. "{{ asdf_sh }}" && asdf current'
-          register: asdf_current
-          changed_when: false
-          when: asdf_tools is defined
-          args:
-            executable: /bin/bash
+                - name: Parse .tool-versions content
+                  set_fact:
+                    asdf_tools: >-
+                      {{
+                        (tool_versions_raw.content | b64decode).splitlines()
+                        | map('trim')
+                        | reject('match', '^(#|$)')
+                        | map('regex_findall', '(\S+)')
+                        | list
+                      }}
 
-        - name: Display installed versions
+                - name: Display detected tools
+                  debug:
+                    msg: "Detected asdf tools: {{ asdf_tools | map('join', ' ') | list | join(', ') }}"
+                  when: asdf_tools is defined and asdf_tools | length > 0
+
+                - name: Get currently installed plugins
+                  shell: '. "{{ asdf_sh }}" && asdf plugin list'
+                  register: installed_plugins
+                  changed_when: false
+                  failed_when: false
+                  args:
+                    executable: /bin/bash
+
+                - name: Install missing asdf plugins
+                  shell: '. "{{ asdf_sh }}" && asdf plugin add {{ item[0] }}'
+                  loop: "{{ asdf_tools }}"
+                  when:
+                    - asdf_tools is defined
+                    - item[0] not in (installed_plugins.stdout_lines | default([]))
+                  failed_when: false
+                  args:
+                    executable: /bin/bash
+
+                - name: Check nodejs keyring status
+                  stat:
+                    path: "{{ paths.home }}/.gnupg/pubring.gpg"
+                  register: nodejs_keyring_check
+                  when:
+                    - asdf_tools is defined
+                    - asdf_tools | map('first') | list | select('match', 'nodejs') | list | length > 0
+
+                - name: Handle nodejs plugin requirements
+                  shell: '. "{{ asdf_sh }}" && bash ~/.asdf/plugins/nodejs/bin/import-release-team-keyring'
+                  when:
+                    - asdf_tools is defined
+                    - asdf_tools | map('first') | list | select('match', 'nodejs') | list | length > 0
+                    - not nodejs_keyring_check.stat.exists
+                  failed_when: false
+                  args:
+                    executable: /bin/bash
+
+                - name: Check currently installed tool versions
+                  shell: '. "{{ asdf_sh }}" && asdf current {{ item[0] }} 2>/dev/null | grep "{{ item[1] }}" || echo "not_installed"'
+                  loop: "{{ asdf_tools }}"
+                  register: current_tool_versions
+                  failed_when: false
+                  changed_when: false
+                  when: asdf_tools is defined
+                  args:
+                    executable: /bin/bash
+
+                - name: Identify tools that need installation
+                  set_fact:
+                    tools_to_install: >-
+                      {{
+                        asdf_tools | zip(current_tool_versions.results)
+                        | selectattr('1.stdout', 'match', 'not_installed')
+                        | map('first')
+                        | list
+                      }}
+                  when:
+                    - asdf_tools is defined
+                    - current_tool_versions.results is defined
+
+                - name: Display tools that need installation
+                  debug:
+                    msg: "Tools to install: {{ tools_to_install | map('join', ' ') | list | join(', ') }}"
+                  when:
+                    - tools_to_install is defined
+                    - tools_to_install | length > 0
+
+                - name: Display already installed tools
+                  debug:
+                    msg: "Already installed tools (skipping): {{ asdf_tools | difference(tools_to_install) | map('join', ' ') | list | join(', ') }}"
+                  when:
+                    - asdf_tools is defined
+                    - tools_to_install is defined
+                    - (asdf_tools | length) > (tools_to_install | length)
+
+                - name: Install missing tools from .tool-versions
+                  shell: '. "{{ asdf_sh }}" && cd "{{ paths.home }}" && asdf install {{ item[0] }} {{ item[1] }}'
+                  loop: "{{ tools_to_install }}"
+                  register: asdf_install_results
+                  failed_when: false
+                  when:
+                    - tools_to_install is defined
+                    - tools_to_install | length > 0
+                  args:
+                    executable: /bin/bash
+
+                - name: Reshim asdf executables
+                  shell: '. "{{ asdf_sh }}" && asdf reshim'
+                  changed_when: false
+                  when:
+                    - tools_to_install is defined
+                    - tools_to_install | length > 0
+                  args:
+                    executable: /bin/bash
+
+                - name: Verify asdf current versions
+                  shell: '. "{{ asdf_sh }}" && asdf current'
+                  register: asdf_current
+                  changed_when: false
+                  when: asdf_tools is defined
+                  args:
+                    executable: /bin/bash
+
+                - name: Display installed versions
+                  debug:
+                    msg: "{{ asdf_current.stdout_lines }}"
+                  when:
+                    - asdf_tools is defined
+                    - asdf_current.stdout_lines is defined
+
+              environment: "{{ asdf_env }}"
+              when: tool_versions_file.stat.exists
+
+            - name: Display skip message
+              debug:
+                msg: "Skipping asdf setup: .tool-versions file not found at {{ paths.tool_versions }}"
+              when: not tool_versions_file.stat.exists
+        - name: Check if Brewfile exists
+          stat:
+            path: "{{ paths.brewfile }}"
+          register: brewfile_check
+
+        - name: Install packages from Brewfile
+          block:
+            - name: Parse Brewfile to extract package names
+              shell: |
+                (grep '^brew ' "{{ paths.brewfile }}" | sed 's/^brew "\(.*\)"/\1/' && grep '^cask ' "{{ paths.brewfile }}" | sed 's/^cask "\(.*\)"/\1/') | tr '\n' ' '
+              register: brewfile_packages_raw
+              changed_when: false
+
+            - name: Set brewfile packages fact
+              set_fact:
+                brewfile_packages: "{{ brewfile_packages_raw.stdout.strip().split() }}"
+
+            - name: Install packages
+              shell: "{{ brew.bin }}/brew bundle --file={{ paths.brewfile }}"
+              register: brew_bundle_result
+              changed_when: "'Installing' in brew_bundle_result.stdout or 'Upgrading' in brew_bundle_result.stdout"
+          when: brewfile_check.stat.exists
+
+        - name: Display Brewfile skip message
           debug:
-            msg: "{{ asdf_current.stdout_lines }}"
-          when: 
-            - asdf_tools is defined
-            - asdf_current.stdout_lines is defined
+            msg: "Skipping Homebrew package installation: Brewfile not found at {{ paths.brewfile }}"
+          when: not brewfile_check.stat.exists
 
-      environment: "{{ asdf_env }}"
-      when: tool_versions_file.stat.exists
+        - name: Install packages or tools from custom scripts
+          block:
+            - name: Discover custom scripts
+              ansible.builtin.find:
+                paths: "{{ playbook_dir }}/bin"
+                patterns: "*.sh"
+                file_type: file
+              register: custom_scripts_found
 
-    - name: Display skip message
-      debug:
-        msg: "Skipping asdf setup: .tool-versions file not found at {{ paths.tool_versions }}"
-      when: not tool_versions_file.stat.exists
+            - name: Build structured script information
+              set_fact:
+                custom_scripts_info: >-
+                  {{
+                    (custom_scripts_info | default([])) + [{
+                      'name': (item | basename | regex_replace('\.sh$', '')),
+                      'path': item
+                    }]
+                  }}
+              loop: "{{ custom_scripts_found.files | map(attribute='path') | list }}"
+              when: (custom_scripts_found.matched | default(0)) > 0
 
-    - name: Execute custom scripts
-      shell: |
-        chmod +x "{{ item }}"
-        "{{ item }}"
-      with_fileglob:
-        - "{{ playbook_dir }}/bin/*.sh"
-      register: custom_script_results
-      failed_when: false
-      environment:
-        HOME: "{{ paths.home }}"
-        BREW_BIN: "{{ brew.bin }}"
-        BREW_PREFIX: "{{ brew.prefix }}"
-        OS_FAMILY: "{{ ansible_facts.os_family }}"
-        ARCH: "{{ ansible_facts.machine }}"
-        PATH: "{{ brew.bin }}:{{ ansible_env.PATH }}"
+            - name: Check if target commands already exist
+              shell: |
+                command -v {{ item.name }}
+              register: command_existence_check
+              changed_when: false
+              failed_when: false
+              loop: "{{ custom_scripts_info | default([]) }}"
+              loop_control:
+                label: "{{ item.name }}"
+                index_var: script_index
+              environment:
+                PATH: "{{ brew.bin }}:{{ ansible_env.PATH }}"
+                HOME: "{{ paths.home }}"
+
+            - name: Execute custom scripts for missing commands
+              shell: |
+                echo "Installing {{ item.name }}..."
+                chmod +x "{{ item.path }}"
+                "{{ item.path }}"
+              register: custom_script_execution
+              failed_when: false
+              changed_when: custom_script_execution.rc == 0
+              loop: "{{ custom_scripts_info | default([]) }}"
+              loop_control:
+                label: "{{ item.name }}"
+                index_var: script_index
+              when: command_existence_check.results[script_index].rc != 0
+              environment:
+                HOME: "{{ paths.home }}"
+                BREW_BIN: "{{ brew.bin }}"
+                BREW_PREFIX: "{{ brew.prefix }}"
+                OS_FAMILY: "{{ ansible_facts.os_family }}"
+                ARCH: "{{ ansible_facts.machine }}"
+                PATH: "{{ brew.bin }}:{{ ansible_env.PATH }}"
 
     - name: Final verification and comprehensive summary
       block:
-        - name: Check standard tool versions
-          command: "{{ brew.bin }}/{{ item }} --version"
-          loop: "{{ packages }}"
-          register: standard_versions
+        - name: Check Homebrew installation status
+          command: "{{ brew.bin }}/brew --version"
+          register: homebrew_status_check
           changed_when: false
           failed_when: false
 
-        - name: Build custom script summary
+        - name: Check zsh configuration status
+          block:
+            - name: Check if .zshrc exists
+              stat:
+                path: "{{ paths.zshrc }}"
+              register: zshrc_status_check
+
+            - name: Test zsh configuration syntax
+              shell: "{{ brew.zsh }} -n {{ paths.zshrc }}"
+              register: zsh_syntax_status
+              changed_when: false
+              failed_when: false
+              when: zshrc_status_check.stat.exists
+
+            - name: Test interactive zsh loading
+              shell: "timeout 10 {{ brew.zsh }} -i -c 'echo ZSH_LOADED_OK && exit 0'"
+              register: zsh_interactive_status
+              changed_when: false
+              failed_when: false
+              when: zshrc_status_check.stat.exists
+
+        - name: Check dotfiles status
+          command: "{{ brew.bin }}/chezmoi status"
+          register: dotfiles_status_check
+          changed_when: false
+          failed_when: false
+
+        - name: Check packages from Homebrew(Linuxbrew) versions
+          command: "{{ brew.bin }}/{{ item }} --version"
+          loop: "{{ brewfile_packages | default([]) }}"
+          register: brew_package_versions
+          changed_when: false
+          failed_when: false
+          when: brewfile_check.stat.exists and (brewfile_packages | default([]) | length > 0)
+
+        - name: Build tools from asdf summary
+          set_fact:
+            asdf_success: >-
+              {{
+                (asdf_install_results.results | default([])
+                | selectattr('rc', 'equalto', 0)
+                | map(attribute='item')
+                | map('join', ' ')
+                | list)
+                if tool_versions_file.stat.exists | default(false) and asdf_install_results is defined
+                else []
+              }}
+            asdf_skipped: >-
+              {{
+                (asdf_tools | default([]) | difference(tools_to_install | default([])) | map('join', ' ') | list)
+                if tool_versions_file.stat.exists | default(false)
+                else ['.tool-versions not found']
+              }}
+            asdf_failed: >-
+              {{
+                (asdf_install_results.results | default([])
+                | rejectattr('rc', 'equalto', 0)
+                | map(attribute='item')
+                | map('join', ' ')
+                | list)
+                if tool_versions_file.stat.exists | default(false) and asdf_install_results is defined
+                else []
+              }}
+
+        - name: Build packages from Homebrew(Linuxbrew) summary
+          set_fact:
+            homebrew_success: >-
+              {{
+                (
+                  (brew_bundle_result.stdout_lines | default([])
+                  | select('search', 'Installing ')
+                  | map('regex_replace', '^Installing (.+)$', '\\1')
+                  | list) +
+                  (brew_bundle_result.stdout_lines | default([])
+                  | select('search', 'Upgrading ')
+                  | map('regex_replace', '^Upgrading (.+)$', '\\1')
+                  | list)
+                )
+                if (brewfile_check.stat.exists | default(false)) and (brew_bundle_result is defined)
+                else []
+              }}
+            homebrew_skipped: >-
+              {{
+                (
+                  (brewfile_packages | default([])) |
+                  difference(
+                    (brew_bundle_result.stdout_lines | default([])
+                    | select('search', 'Installing ')
+                    | map('regex_replace', '^Installing (.+)$', '\\1')
+                    | list) +
+                    (brew_bundle_result.stdout_lines | default([])
+                    | select('search', 'Upgrading ')
+                    | map('regex_replace', '^Upgrading (.+)$', '\\1')
+                    | list) +
+                    (brew_package_versions.results | default([])
+                    | rejectattr('rc', 'equalto', 0)
+                    | map(attribute='item')
+                    | list)
+                  )
+                )
+                if (brewfile_check.stat.exists | default(false)) and (brew_bundle_result is defined)
+                else (['Brewfile not found'] if not (brewfile_check.stat.exists | default(false)) else [])
+              }}
+            homebrew_failed: >-
+              {{
+                brew_package_versions.results | default([])
+                | rejectattr('rc', 'equalto', 0)
+                | map(attribute='item')
+                | list
+                if brewfile_check.stat.exists | default(false)
+                else []
+              }}
+
+        - name: Build custom script summary with enhanced safety
           set_fact:
             custom_success: >-
               {{
-                (custom_script_results.results | default([]))
+                (custom_script_execution.results | default([]))
+                | rejectattr('skipped', 'defined')
+                | selectattr('rc', 'defined')
                 | selectattr('rc', 'equalto', 0)
                 | map(attribute='item')
-                | map('basename')
+                | map(attribute='name')
+                | list
+              }}
+            custom_skipped: >-
+              {{
+                (command_existence_check.results | default([]))
+                | selectattr('rc', 'defined')
+                | selectattr('rc', 'equalto', 0)
+                | map(attribute='item')
+                | map(attribute='name')
                 | list
               }}
             custom_failed: >-
               {{
-                (custom_script_results.results | default([]))
+                (custom_script_execution.results | default([]))
+                | rejectattr('skipped', 'defined')
+                | selectattr('rc', 'defined')
                 | rejectattr('rc', 'equalto', 0)
                 | map(attribute='item')
-                | map('basename')
+                | map(attribute='name')
                 | list
               }}
 
@@ -408,15 +664,36 @@
               - "🚀 Development Environment Setup Complete! 🚀"
               - "================================================="
               - ""
-              - "📦 Standard Tools: {{ standard_versions.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list | join(', ') }}"
-              - "🔧 ASDF Tools: {{ asdf_tools | map('join', ' ') | list | join(', ') if asdf_tools is defined else 'None detected' }}"
-              - "🛠️  Custom Scripts:"
-              - "   ✅ Success: {{ custom_success | join(', ') if custom_success | length > 0 else 'None' }}"
-              - "   ❌ Failed: {{ custom_failed | join(', ') if custom_failed | length > 0 else 'None' }}"
+              - "📋 Homebrew Installation Health Check:"
+              - "   ✅ Status: {{ 'OK' if homebrew_status_check.rc == 0 else 'FAILED' }}"
+              - "   📍 Path: {{ brew.bin }}/brew"
               - ""
-              - "🔐 Security: Enabled (age encryption)"
-              - "📁 Dotfiles: {{ final_status.stdout_lines | join(', ') if final_status.stdout_lines else 'Clean' }}"
-              - "⚙️  Configuration: {{ paths.chezmoi_config }}/chezmoi.toml"
+              - "🐚 Zsh Configuration Health Check:"
+              - "   ✅ .zshrc exists: {{ 'YES' if zshrc_status_check.stat.exists else 'NO' }}"
+              - "   ✅ Syntax check: {{ 'PASSED' if (zshrc_status_check.stat.exists and zsh_syntax_status.rc == 0) else 'SKIPPED/FAILED' }}"
+              - "   ✅ Interactive load: {{ 'PASSED' if (zshrc_status_check.stat.exists and zsh_interactive_status.rc == 0) else 'SKIPPED/FAILED' }}"
               - ""
-              - "🎉 Ready to code! 🎉"
+              - "📁 Dotfiles Health Check:"
+              - "   ✅ Status: {{ 'Clean' if dotfiles_status_check.stdout == '' else 'Pending changes' }}"
+              - "   📍 Config: {{ paths.chezmoi_config }}/chezmoi.toml"
+              - ""
+              - "🛠️ Installed Packages/Tools Health Check:"
+              - ""
+              - "   📦 Tools from ASDF:"
+              - "     ✅ Success: {{ asdf_success | join(', ') if asdf_success | length > 0 else 'None' }}"
+              - "     ⏭️ Skipped: {{ asdf_skipped | join(', ') if asdf_skipped | length > 0 else 'None' }}"
+              - "     ❌ Failed: {{ asdf_failed | join(', ') if asdf_failed | length > 0 else 'None' }}"
+              - ""
+              - "   🍺 Packages from Homebrew:"
+              - "     ✅ Success: {{ homebrew_success | join(', ') if homebrew_success | length > 0 else 'None' }}"
+              - "     ⏭️ Skipped: {{ homebrew_skipped | join(', ') if homebrew_skipped | length > 0 else 'None' }}"
+              - "     ❌ Failed: {{ homebrew_failed | join(', ') if homebrew_failed | length > 0 else 'None' }}"
+              - ""
+              - "   🔧 Packages/Tools from Custom Scripts:"
+              - "     ✅ Success: {{ custom_success | join(', ') if custom_success | length > 0 else 'None' }}"
+              - "     ⏭️ Skipped: {{ custom_skipped | join(', ') if custom_skipped | length > 0 else 'None' }}"
+              - "     ❌ Failed: {{ custom_failed | join(', ') if custom_failed | length > 0 else 'None' }}"
+              - ""
+              - "🎉 Setup Complete! 🎉"
+              - ""
               - "================================================="

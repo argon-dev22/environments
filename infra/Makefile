@@ -1,7 +1,7 @@
 INVENTORY=inventory.ini
 VAULT_FILE=.vault_pass
 
-.PHONY: check apply syntax clean
+.PHONY: check apply syntax clean yamllint
 
 syntax:
 	ansible-playbook --syntax-check -i $(INVENTORY) playbook.yml

@@ -21,10 +21,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-    
+
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -46,12 +45,15 @@ jobs:
         working-directory: infra
 
       - name: Run Ansible syntax check
-        run: ansible-playbook --syntax-check -i inventory.ini playbook.yml --vault-password-file .vault_pass
+        run: |
+          ansible-playbook --syntax-check -i inventory.ini playbook.yml \
+            --vault-password-file .vault_pass
         working-directory: infra
 
       - name: Run playbook in check mode
         run: |
-          ansible-playbook -i inventory.ini playbook.yml --check --diff --vault-password-file .vault_pass
+          ansible-playbook -i inventory.ini playbook.yml --check --diff \
+            --vault-password-file .vault_pass
         env:
           SSH_AUTH_SOCK: ""
         working-directory: infra
